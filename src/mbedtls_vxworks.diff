@@ -1,0 +1,312 @@
+diff --git a/include/mbedtls/config.h b/include/mbedtls/config.h
+index 70820be56..2c4282906 100644
+--- a/include/mbedtls/config.h
++++ b/include/mbedtls/config.h
+@@ -1013,7 +1013,7 @@
+  *
+  * Uncomment this macro to prevent loading of default entropy functions.
+  */
+-//#define MBEDTLS_NO_DEFAULT_ENTROPY_SOURCES
++#define MBEDTLS_NO_DEFAULT_ENTROPY_SOURCES
+ 
+ /**
+  * \def MBEDTLS_NO_PLATFORM_ENTROPY
+@@ -1024,7 +1024,7 @@
+  *
+  * Uncomment this macro to disable the built-in platform entropy functions.
+  */
+-//#define MBEDTLS_NO_PLATFORM_ENTROPY
++#define MBEDTLS_NO_PLATFORM_ENTROPY
+ 
+ /**
+  * \def MBEDTLS_ENTROPY_FORCE_SHA256
+diff --git a/include/mbedtls/entropy_poll.h b/include/mbedtls/entropy_poll.h
+index 94dd657eb..ab4b6c339 100644
+--- a/include/mbedtls/entropy_poll.h
++++ b/include/mbedtls/entropy_poll.h
+@@ -103,6 +103,20 @@ int mbedtls_nv_seed_poll( void *data,
+                           unsigned char *output, size_t len, size_t *olen );
+ #endif
+ 
++#if defined(__VXWORKS__)
++/**
++ * \brief           VxWorks entropy build function
++ */
++
++void mbedtls_vxworks_entropy_build (void);
++
++/**
++ * \brief           VxWorks entropy poll callback
++ */
++int mbedtls_vxworks_poll( void *data,
++                    unsigned char *output, size_t len, size_t *olen );
++#endif
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/library/entropy.c b/library/entropy.c
+index f8db1a550..409eac45c 100644
+--- a/library/entropy.c
++++ b/library/entropy.c
+@@ -117,6 +117,14 @@ void mbedtls_entropy_init( mbedtls_entropy_context *ctx )
+     ctx->initial_entropy_run = 0;
+ #endif
+ #endif /* MBEDTLS_NO_DEFAULT_ENTROPY_SOURCES */
++
++#if defined(__VXWORKS__)
++    mbedtls_entropy_add_source( ctx, mbedtls_vxworks_poll, NULL,
++                                MBEDTLS_ENTROPY_MIN_PLATFORM,
++                                MBEDTLS_ENTROPY_SOURCE_STRONG );
++
++    mbedtls_vxworks_entropy_build();
++#endif /* __VXWORKS__ */
+ }
+ 
+ void mbedtls_entropy_free( mbedtls_entropy_context *ctx )
+diff --git a/library/entropy_poll.c b/library/entropy_poll.c
+index 040aa117d..7fbb6d5ea 100644
+--- a/library/entropy_poll.c
++++ b/library/entropy_poll.c
+@@ -32,6 +32,11 @@
+ 
+ #include <string.h>
+ 
++#if defined(__VXWORKS__)
++#include <vxWorks.h>
++#include <randomNumGen.h>
++#endif
++
+ #if defined(MBEDTLS_ENTROPY_C)
+ 
+ #include "mbedtls/entropy.h"
+@@ -272,4 +277,39 @@ int mbedtls_nv_seed_poll( void *data,
+ }
+ #endif /* MBEDTLS_ENTROPY_NV_SEED */
+ 
++#if defined(__VXWORKS__)
++void mbedtls_vxworks_entropy_build (void)
++{
++    unsigned char seed[1024];
++    unsigned int i;
++
++    for ( i = 0; i < sizeof(seed); i++)
++    {
++        seed[i]= i*3%256;
++    }
++
++    /* build entropy */
++    randAdd( seed, 0, 0 );
++
++    /* build entropy */
++    for ( i = 4; i <= sizeof(seed); i *= 2)
++    {
++    randAdd ( seed, i - 1, i );
++    }
++}
++
++int mbedtls_vxworks_poll( void *data,
++                    unsigned char *output, size_t len, size_t *olen )
++{
++    ((void) data);
++
++    if( randBytes( output, len ) != OK)
++        return( -1 );
++
++    *olen = len;
++
++    return( 0 );
++}
++#endif /* __VXWORKS__ */
++
+ #endif /* MBEDTLS_ENTROPY_C */
+diff --git a/library/net_sockets.c b/library/net_sockets.c
+index 816b1303d..55e611426 100644
+--- a/library/net_sockets.c
++++ b/library/net_sockets.c
+@@ -19,10 +19,12 @@
+  *  This file is part of mbed TLS (https://tls.mbed.org)
+  */
+ 
++#if !defined(__VXWORKS__)
+ /* Enable definition of getaddrinfo() even when compiling with -std=c99. Must
+  * be set before config.h, which pulls in glibc's features.h indirectly.
+  * Harmless on other platforms. */
+ #define _POSIX_C_SOURCE 200112L
++#endif
+ 
+ #if !defined(MBEDTLS_CONFIG_FILE)
+ #include "mbedtls/config.h"
+@@ -34,7 +36,7 @@
+ 
+ #if !defined(unix) && !defined(__unix__) && !defined(__unix) && \
+     !defined(__APPLE__) && !defined(_WIN32) && !defined(__QNXNTO__) && \
+-    !defined(__HAIKU__)
++    !defined(__HAIKU__) && !defined(__VXWORKS__)
+ #error "This module only works on Unix and Windows, see MBEDTLS_NET_C in config.h"
+ #endif
+ 
+@@ -80,6 +82,7 @@ static int wsa_init_done = 0;
+ 
+ #else /* ( _WIN32 || _WIN32_WCE ) && !EFIX64 && !EFI32 */
+ 
++#include <vxWorks.h>
+ #include <sys/types.h>
+ #include <sys/socket.h>
+ #include <netinet/in.h>
+@@ -93,6 +96,9 @@ static int wsa_init_done = 0;
+ 
+ #define IS_EINTR( ret ) ( ( ret ) == EINTR )
+ 
++#if defined(__VXWORKS__)
++#include <ioLib.h>
++#endif /* __VXWORKS__ */
+ #endif /* ( _WIN32 || _WIN32_WCE ) && !EFIX64 && !EFI32 */
+ 
+ /* Some MS functions want int and MSVC warns if we pass size_t,
+@@ -433,9 +439,14 @@ int mbedtls_net_set_block( mbedtls_net_context *ctx )
+     !defined(EFI32)
+     u_long n = 0;
+     return( ioctlsocket( ctx->fd, FIONBIO, &n ) );
++#else
++#if defined(__VXWORKS__)
++    u_long n = 0;
++    return( ioctl( ctx->fd, FIONBIO, &n ) );
+ #else
+     return( fcntl( ctx->fd, F_SETFL, fcntl( ctx->fd, F_GETFL ) & ~O_NONBLOCK ) );
+ #endif
++#endif
+ }
+ 
+ int mbedtls_net_set_nonblock( mbedtls_net_context *ctx )
+@@ -444,9 +455,14 @@ int mbedtls_net_set_nonblock( mbedtls_net_context *ctx )
+     !defined(EFI32)
+     u_long n = 1;
+     return( ioctlsocket( ctx->fd, FIONBIO, &n ) );
++#else
++#if defined(__VXWORKS__)
++    u_long n = 1;
++    return( ioctl( ctx->fd, FIONBIO, &n ) );
+ #else
+     return( fcntl( ctx->fd, F_SETFL, fcntl( ctx->fd, F_GETFL ) | O_NONBLOCK ) );
+ #endif
++#endif
+ }
+ 
+ /*
+diff --git a/library/timing.c b/library/timing.c
+index 3e8139f1f..8bfbe9b17 100644
+--- a/library/timing.c
++++ b/library/timing.c
+@@ -40,7 +40,7 @@
+ 
+ #if !defined(unix) && !defined(__unix__) && !defined(__unix) && \
+     !defined(__APPLE__) && !defined(_WIN32) && !defined(__QNXNTO__) && \
+-    !defined(__HAIKU__)
++    !defined(__HAIKU__) && !defined(__VXWORKS__)
+ #error "This module only works on Unix and Windows, see MBEDTLS_TIMING_C in config.h"
+ #endif
+ 
+diff --git a/Makefile b/Makefile
+index a0fcb2bc5..633065a78 100644
+--- a/Makefile
++++ b/Makefile
+@@ -2,7 +2,9 @@
+ DESTDIR=/usr/local
+ PREFIX=mbedtls_
+ 
++ifndef VERBOSE
+ .SILENT:
++endif
+ 
+ .PHONY: all no_test programs lib tests install uninstall clean test check covtest lcov apidoc apidoc_clean
+ 
+diff --git a/library/Makefile b/library/Makefile
+index ac88d4c3f..b6336bb03 100644
+--- a/library/Makefile
++++ b/library/Makefile
+@@ -96,7 +96,9 @@ OBJS_TLS=	debug.o		net_sockets.o		\
+ 		ssl_srv.o	ssl_ticket.o		\
+ 		ssl_tls.o
+ 
++ifndef VERBOSE
+ .SILENT:
++endif
+ 
+ .PHONY: all static shared clean
+ 
+@@ -123,19 +125,19 @@ endif
+ 
+ libmbedtls.$(SOEXT_TLS): $(OBJS_TLS) libmbedx509.so
+ 	echo "  LD    $@"
+-	$(CC) -shared -Wl,-soname,$@ -L. -lmbedcrypto -lmbedx509 $(LOCAL_LDFLAGS) $(LDFLAGS) -o $@ $(OBJS_TLS)
++	$(LD) -shared -soname,$@ -L. -lmbedcrypto -lmbedx509 $(LOCAL_LDFLAGS) $(LDFLAGS) -o $@ $(OBJS_TLS)
+ 
+ libmbedtls.so: libmbedtls.$(SOEXT_TLS)
+-	echo "  LN    $@ -> $<"
+-	ln -sf $< $@
++	echo "  CP    $< -> $@"
++	cp $< $@
+ 
+ libmbedtls.dylib: $(OBJS_TLS) libmbedx509.dylib
+ 	echo "  LD    $@"
+-	$(CC) -dynamiclib -L. -lmbedcrypto -lmbedx509 $(LOCAL_LDFLAGS) $(LDFLAGS) -o $@ $(OBJS_TLS)
++	$(LD) -dynamiclib -L. -lmbedcrypto -lmbedx509 $(LOCAL_LDFLAGS) $(LDFLAGS) -o $@ $(OBJS_TLS)
+ 
+ libmbedtls.dll: $(OBJS_TLS) libmbedx509.dll
+ 	echo "  LD    $@"
+-	$(CC) -shared -Wl,-soname,$@ -Wl,--out-implib,$@.a -o $@ $(OBJS_TLS) -lws2_32 -lwinmm -lgdi32 -L. -lmbedcrypto -lmbedx509 -static-libgcc $(LOCAL_LDFLAGS) $(LDFLAGS)
++	$(LD) -shared -soname,$@ --out-implib,$@.a -o $@ $(OBJS_TLS) -lws2_32 -lwinmm -lgdi32 -L. -lmbedcrypto -lmbedx509 -static-libgcc $(LOCAL_LDFLAGS) $(LDFLAGS)
+ 
+ # x509
+ libmbedx509.a: $(OBJS_X509)
+@@ -150,19 +152,19 @@ endif
+ 
+ libmbedx509.$(SOEXT_X509): $(OBJS_X509) libmbedcrypto.so
+ 	echo "  LD    $@"
+-	$(CC) -shared -Wl,-soname,$@ -L. -lmbedcrypto $(LOCAL_LDFLAGS) $(LDFLAGS) -o $@ $(OBJS_X509)
++	$(LD) -shared -soname,$@ -L. -lmbedcrypto $(LOCAL_LDFLAGS) $(LDFLAGS) -o $@ $(OBJS_X509)
+ 
+ libmbedx509.so: libmbedx509.$(SOEXT_X509)
+-	echo "  LN    $@ -> $<"
+-	ln -sf $< $@
++	echo "  CP    $< -> $@"
++	cp $< $@
+ 
+ libmbedx509.dylib: $(OBJS_X509) libmbedcrypto.dylib
+ 	echo "  LD    $@"
+-	$(CC) -dynamiclib -L. -lmbedcrypto  $(LOCAL_LDFLAGS) $(LDFLAGS) -o $@ $(OBJS_X509)
++	$(LD) -dynamiclib -L. -lmbedcrypto  $(LOCAL_LDFLAGS) $(LDFLAGS) -o $@ $(OBJS_X509)
+ 
+ libmbedx509.dll: $(OBJS_X509) libmbedcrypto.dll
+ 	echo "  LD    $@"
+-	$(CC) -shared -Wl,-soname,$@ -Wl,--out-implib,$@.a -o $@ $(OBJS_X509) -lws2_32 -lwinmm -lgdi32 -L. -lmbedcrypto -static-libgcc $(LOCAL_LDFLAGS) $(LDFLAGS)
++	$(LD) -shared -soname,$@ --out-implib,$@.a -o $@ $(OBJS_X509) -lws2_32 -lwinmm -lgdi32 -L. -lmbedcrypto -static-libgcc $(LOCAL_LDFLAGS) $(LDFLAGS)
+ 
+ # crypto
+ libmbedcrypto.a: $(OBJS_CRYPTO)
+@@ -177,19 +179,19 @@ endif
+ 
+ libmbedcrypto.$(SOEXT_CRYPTO): $(OBJS_CRYPTO)
+ 	echo "  LD    $@"
+-	$(CC) -shared -Wl,-soname,$@ $(LOCAL_LDFLAGS) $(LDFLAGS) -o $@ $(OBJS_CRYPTO)
++	$(LD) -shared -soname,$@ $(LOCAL_LDFLAGS) $(LDFLAGS) -o $@ $(OBJS_CRYPTO)
+ 
+ libmbedcrypto.so: libmbedcrypto.$(SOEXT_CRYPTO)
+-	echo "  LN    $@ -> $<"
+-	ln -sf $< $@
++	echo "  CP    $< -> $@"
++	cp $< $@
+ 
+ libmbedcrypto.dylib: $(OBJS_CRYPTO)
+ 	echo "  LD    $@"
+-	$(CC) -dynamiclib $(LOCAL_LDFLAGS) $(LDFLAGS) -o $@ $(OBJS_CRYPTO)
++	$(LD) -dynamiclib $(LOCAL_LDFLAGS) $(LDFLAGS) -o $@ $(OBJS_CRYPTO)
+ 
+ libmbedcrypto.dll: $(OBJS_CRYPTO)
+ 	echo "  LD    $@"
+-	$(CC) -shared -Wl,-soname,$@ -Wl,--out-implib,$@.a -o $@ $(OBJS_CRYPTO) -lws2_32 -lwinmm -lgdi32 -static-libgcc $(LOCAL_LDFLAGS) $(LDFLAGS)
++	$(LD) -shared -soname,$@ --out-implib,$@.a -o $@ $(OBJS_CRYPTO) -lws2_32 -lwinmm -lgdi32 -static-libgcc $(LOCAL_LDFLAGS) $(LDFLAGS)
+ 
+ .c.o:
+ 	echo "  CC    $<"

@@ -1,0 +1,129 @@
+diff --git a/examples/common/targets.mk b/examples/common/targets.mk
+index d1f9c84..de7a9a4 100644
+--- a/examples/common/targets.mk
++++ b/examples/common/targets.mk
+@@ -33,7 +33,7 @@ $(IOTC_EXAMPLE_BIN) : $(IOTC_EXAMPLE_OBJS)
+ 	$(info [$(CC)] $@)
+ 	@-mkdir -p $(dir $@)
+ 	@cp $(IOTC_CLIENT_ROOTCA_LIST) $(dir $@)
+-	$(MD) $(CC) $(IOTC_EXAMPLE_OBJS) $(IOTC_FLAGS_LINKER) -o $@
++	$(MD) $(LD) $(LDFLAGS) $(LIBS) $(IOTC_EXAMPLE_OBJS) $(IOTC_FLAGS_LINKER) -o $@
+ 
+ clean:
+ 	$(info [clean] $(IOTC_EXAMPLE_NAME) )
+diff --git a/make/mt-config/mt-config.mk b/make/mt-config/mt-config.mk
+index f1b8553..68d89b5 100644
+--- a/make/mt-config/mt-config.mk
++++ b/make/mt-config/mt-config.mk
+@@ -66,7 +66,7 @@ ifneq (,$(findstring fuzz_test,$(CONFIG)))
+     IOTC_CONFIG_FLAGS += -fsanitize=address -fomit-frame-pointer -fsanitize-coverage=inline-8bit-counters -g
+ endif
+ 
+-IOTC_COMMON_COMPILER_FLAGS += -Wall -Werror
++IOTC_COMMON_COMPILER_FLAGS += -Wall
+ IOTC_C_FLAGS +=
+ IOTC_CXX_FLAGS += -Wextra -std=c++11
+ 
+diff --git a/make/mt-os/mt-os.mk b/make/mt-os/mt-os.mk
+index f5fcacb..2e6f1ea 100644
+--- a/make/mt-os/mt-os.mk
++++ b/make/mt-os/mt-os.mk
+@@ -18,6 +18,7 @@ IOTC_CONST_PLATFORM_OSX := osx
+ IOTC_CONST_PLATFORM_ARM := arm-linux
+ IOTC_CONST_PLATFORM_FREERTOS_LINUX := freertos-linux
+ IOTC_CONST_PLATFORM_ZEPHYR := zephyr
++IOTC_CONST_PLATFORM_VXWORKS := vxworks
+ 
+ ifneq (,$(findstring $(IOTC_CONST_PLATFORM_ARM),$(TARGET)))
+   IOTC_CONST_PLATFORM_CURRENT := $(IOTC_CONST_PLATFORM_ARM)
+@@ -43,5 +44,9 @@ ifneq (,$(findstring $(IOTC_CONST_PLATFORM_ZEPHYR),$(TARGET)))
+   IOTC_CONST_PLATFORM_CURRENT := $(IOTC_CONST_PLATFORM_ZEPHYR)
+ endif
+ 
++ifneq (,$(findstring $(IOTC_CONST_PLATFORM_VXWORKS),$(TARGET)))
++  IOTC_CONST_PLATFORM_CURRENT := $(IOTC_CONST_PLATFORM_VXWORKS)
++endif
++
+ IOTC_BINDIR := $(IOTC_BINDIR_BASE)/$(IOTC_CONST_PLATFORM_CURRENT)
+ IOTC_OBJDIR := $(IOTC_OBJDIR_BASE)/$(IOTC_CONST_PLATFORM_CURRENT)
+diff --git a/make/mt-os/mt-vxworks.mk b/make/mt-os/mt-vxworks.mk
+new file mode 100644
+index 0000000..d8302bf
+--- /dev/null
++++ b/make/mt-os/mt-vxworks.mk
+@@ -0,0 +1,38 @@
++# Copyright 2018-2019 Google LLC
++#
++# This is part of the Google Cloud IoT Device SDK for Embedded C.
++# It is licensed under the BSD 3-Clause license; you may not use this file
++# except in compliance with the License.
++#
++# You may obtain a copy of the License at:
++#  https://opensource.org/licenses/BSD-3-Clause
++#
++# Unless required by applicable law or agreed to in writing, software
++# distributed under the License is distributed on an "AS IS" BASIS,
++# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++# See the License for the specific language governing permissions and
++# limitations under the License.
++
++CC ?= gcc
++CXX ?= g++
++AR ?= ar
++
++# IOTC_COMMON_COMPILER_FLAGS += -fPIC
++IOTC_LIB_FLAGS += $(IOTC_TLS_LIBFLAGS) -lm
++
++include make/mt-os/mt-os-common.mk
++
++ifdef IOTC_SHARED
++  AR = gcc
++  XI = $(IOTC_BINDIR)/libiotc.so
++  IOTC_ARFLAGS += -fPIC -DIOTC_SHARED -shared -o $(XI)
++else
++  IOTC_ARFLAGS += -rs -c $(XI)
++endif
++
++# Temporarily disable these warnings until the code gets changed.
++IOTC_COMMON_COMPILER_FLAGS += -Wno-format
++
++IOTC_CONFIG_FLAGS += -DIOTC_MULTI_LEVEL_DIRECTORY_STRUCTURE
++IOTC_CONFIG_FLAGS += -DIOTC_LIBCRYPTO_AVAILABLE
++IOTC_LIBCRYPTO_AVAILABLE := 1
+diff --git a/src/bsp/platform/posix/iotc_bsp_io_fs_posix.c b/src/bsp/platform/posix/iotc_bsp_io_fs_posix.c
+index 308d21e..fcbf38a 100644
+--- a/src/bsp/platform/posix/iotc_bsp_io_fs_posix.c
++++ b/src/bsp/platform/posix/iotc_bsp_io_fs_posix.c
+@@ -25,6 +25,7 @@
+ #include <memory.h>
+ #include <stdio.h>
+ #include <sys/stat.h>
++#include <string.h>
+ 
+ /* The size of the buffer to be used for reads. */
+ const size_t iotc_bsp_io_fs_buffer_size = 1024;
+diff --git a/src/libiotc/debug_extensions/memory_limiter/iotc_memory_limiter.c b/src/libiotc/debug_extensions/memory_limiter/iotc_memory_limiter.c
+index d1b95f5..d9cd8a5 100644
+--- a/src/libiotc/debug_extensions/memory_limiter/iotc_memory_limiter.c
++++ b/src/libiotc/debug_extensions/memory_limiter/iotc_memory_limiter.c
+@@ -24,8 +24,10 @@
+ #include "iotc_memory_limiter.h"
+ 
+ #ifdef IOTC_PLATFORM_BASE_POSIX
++#ifndef __VXWORKS__
+ #include <execinfo.h>
+ #endif
++#endif
+ 
+ #ifdef __cplusplus
+ extern "C" {
+diff --git a/examples/common/rules.mk b/examples/common/rules.mk
+index 8327c53..554e000 100644
+--- a/examples/common/rules.mk
++++ b/examples/common/rules.mk
+@@ -63,4 +63,4 @@ endif
+ # -lm is only needed by linux
+ # -lpthread only if both linux and multithreading is enabled in the
+ # Google Cloud IoT EmbeddedC Client at compile time
+-IOTC_FLAGS_LINKER := -L$(IOTC_CLIENT_LIB_PATH) -liotc -lpthread $(TLS_LIB_CONFIG_FLAGS) -lm
++IOTC_FLAGS_LINKER := -L$(IOTC_CLIENT_LIB_PATH) -liotc $(TLS_LIB_CONFIG_FLAGS) -lm
